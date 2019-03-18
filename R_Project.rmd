@@ -1,0 +1,541 @@
+---
+title: "R Project"
+author: "Xiao Li"
+date: "2/26/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+#install.packages("tm")
+#install.packages("wordcloud")
+#install.packages("RColorBrewer")
+#install.packages("NLP")
+```
+
+```{r libs, include=FALSE}
+library(readr)
+library(tidyverse)
+library(gapminder)
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(glmnet)
+library(caret)
+library(ISLR)
+library(janitor)
+library(rpart)
+library(rpart.plot)
+library(partykit)
+library(nnet)
+library(MASS)
+library(wordcloud)
+library(RColorBrewer)
+library(randomForest)
+library(gbm)
+library(plotROC)
+library(kernlab)
+library(nnet)
+library(plyr)
+theme_set(theme_bw())
+```
+
+####Data Understanding
+This training dataset, provided by PetFinder.my that is a Malaysia’s leading animal welfare platform, records 14993 detailed profiles of stray animals waiting for adoption in Malaysia. The data fields of this dataset are shown as below, there are 24 fields totally
+```{r}
+df <- read_csv("train.csv")
+str(df)
+```
+
+####Data Preparation
+Since there are some variables in the dataset is useless and meaningless for predicting adoption speed, by reading first 6 rows of the original dataset to understand each variable, I would like to remove `Name`, `PetID`, `Quantity`, `RescuerID` and `State`. Also, since this project mainly focuses on predictive analytics instead of sentiment analysis, I decided to use the dataset without including the `Description` variable.
+```{r}
+head(df)
+```
+
+By looking at the number of data at each level of animal quantity, since the `Quantity = 1` has 11565 rows that is more than other levels' data size, I would like to remove the profile data with `Quantity > 1` for focusing on analyzing the profile data with just one animal, which could make the analysis more effective and workable.
+```{r}
+count(df$Quantity)
+```
+```{r}
+df <- df%>%
+  filter(Quantity == "1")
+head(df)
+```
+```{r}
+df <- subset(df, select = -c(Name, PetID, Quantity, State, RescuerID))
+head(df)
+```
+Now, our final dataset for building analysis and training models has 11565 observations and 19 variables. 
+
+###Word Cloud for `Description` of pets' profiles
+Let's remove all non-English description first.
+```{r}
+library(stringi)
+Description <- stringi::stri_trans_general(df$Description, "latin-ascii")
+```
+
+Then, clean our `Description`.
+```{r}
+library(tm)
+description<-Corpus(VectorSource(Description))
+```
+```{r}
+description <- tm_map(description,stripWhitespace)
+description <- tm_map(description,tolower)
+description <- tm_map(description,removeNumbers)
+description <- tm_map(description,removePunctuation)
+description <- tm_map(description,removeWords, stopwords("english"))
+description <- tm_map(description, removeWords, 
+  c("and","the","our","that","for","are","also","more","has","must","have","should","this","with","dog","cat","dogs","cats","home","adoption","can","give"))
+```
+```{r}
+tdm_desc <- TermDocumentMatrix (description) #Creates a TDM
+TDM <- as.matrix(tdm_desc) #Convert this into a matrix format
+v <- sort(rowSums(TDM), decreasing = TRUE) #Gives you the frequencies for every word
+summary(v)
+```
+
+Now, we can create the colorful word cloud to get a glance of those frequently used terms how these animals described in their profiles.
+```{r}
+wordcloud (description, scale=c(3.5,0.5), max.words=100, random.order=FALSE, rot.per=0.35, use.r.layout=FALSE, colors=brewer.pal(8, "Dark2"))
+```
+
+
+Right now, let's remove the `Description` from original dataset for the following general statistical analysis. 
+```{r}
+df1 <- subset(df, select = -c(Description))
+```
+
+###Data Audit
+
+```{r}
+cor(df1)
+```
+```{r}
+str(df1)
+```
+
+#####continuous variables vs. target
+Let's plot the relationships between continuous variables and target variable, `AdoptionSpeed`.
+
+- `Age(in months)` vs. `AdoptionSpeed`: by reading the scatter plot, it's obviously to see that younger animals would be more quickly to be adopted.
+```{r}
+p <- ggplot(df1, aes(x = Age, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+- `Fee` vs. `AdoptionSpeed`: by reading the plot, even though most adoptions of animals are free, we still can see such data pattern that most animals that were adopted immediately on the same day they listed have very low adoption fee.
+```{r}
+p <- ggplot(df1, aes(x = Fee, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+- `VideoAmt` vs. `AdoptionSpeed`: such plot actually might reflect that the later the animal is adopted, the more amount of videos for promoting it.
+```{r}
+p <- ggplot(df1, aes(x = VideoAmt, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+- `PhotoAmt` vs. `AdoptionSpeed`: Here we see the same relationship that the later the animal is adopted, the more photo amount uploaded for encouraging the adoption of it.
+```{r}
+p <- ggplot(df1, aes(x = PhotoAmt, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+#####continous variable
+- `Age`: Most animals abandoned are very young or even baby.
+```{r}
+ggplot(df1, aes(x = Age)) +
+        geom_histogram(fill = "dodgerblue4")
+```
+
+- `Fee`: Most adoptions are free and even the charged adoptions are still very cheap.
+```{r}
+ggplot(df1, aes(x = Fee)) +
+        geom_histogram(fill = "dodgerblue4")
+```
+
+- `VideoAmt`: Most profiles of animals don't have videos as vivid introductions.
+```{r}
+ggplot(df1, aes(x = VideoAmt)) +
+        geom_histogram(fill = "dodgerblue4")
+```
+
+- `PhotoAmt`: Most profiles have at least one picture of the animal.
+```{r}
+ggplot(df1, aes(x = PhotoAmt)) +
+        geom_histogram(fill = "dodgerblue4")
+```
+
+#####categorical variables vs. target
+Let's plot the relationships between categorical variables and target variable, `AdoptionSpeed`.
+
+- `Type`(1 = Dog, 2 = Cat) vs. `AdoptionSpeed`: There are no difference between the adoption speed of dogs and cats.
+```{r}
+p <- ggplot(df1, aes(x = Type, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Breed1` vs. `AdoptionSpeed`: Since the `Breed1` less than 240 and equals to 307 are dogs, others are cats. We can see that, except `Breed1` equals to 307, dogs generally have a slightly slower adoption speed than cats.
+```{r}
+Breed <- count(df1$Breed1)
+Breed <- Breed[order(-Breed$freq),]
+Breed
+
+p <- ggplot(df1, aes(x = Breed1, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Gender`(1 = Male, 2 = Female) vs. `AdoptionSpeed`: There are no difference between the adoption speed of different genders.
+```{r}
+p <- ggplot(df1, aes(x = Gender, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Color1`&`Color2`&`Color3` vs. `AdoptionSpeed`: There are no difference among the adoption speed of different colors of animals.
+```{r}
+p1 <- ggplot(df1, aes(x = Color1, y = AdoptionSpeed))
+p1 + geom_point(alpha = .15, col = "#6e0000")
+
+p2 <- ggplot(df1, aes(x = Color2, y = AdoptionSpeed))
+p2 + geom_point(alpha = .15, col = "#6e0000")
+
+p3 <- ggplot(df1, aes(x = Color3, y = AdoptionSpeed))
+p3 + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `MaturitySize` (1 = Small, 2 = Medium, 3 = Large, 4 = Extra Large, 0 = Not Specified) vs. `AdoptionSpeed`: Animals with extra large maturity size usually have to wait 1 week to 3 months for being adopted.
+```{r}
+p <- ggplot(df1, aes(x = MaturitySize, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `FurLength`(1 = Short, 2 = Medium, 3 = Long, 0 = Not Specified) vs. `AdoptionSpeed`: There are no difference among the adoption speed of different fur lengths of animals.
+```{r}
+p <- ggplot(df1, aes(x = FurLength, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Vaccinated`(1 = Yes, 2 = No, 3 = Not Sure) vs. `AdoptionSpeed`: There are no difference among the adoption speed of different vaccinated conditions of animals.
+```{r}
+p <- ggplot(df1, aes(x = Vaccinated, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Dewormed`(1 = Yes, 2 = No, 3 = Not Sure) vs. `AdoptionSpeed`: There are no difference among the adoption speed of different dewormed conditions of animals.
+```{r}
+p <- ggplot(df1, aes(x = Dewormed, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Sterilized`(1 = Yes, 2 = No, 3 = Not Sure) vs. `AdoptionSpeed`: There are no difference among the adoption speed of different sterilized conditions of animals.
+```{r}
+p <- ggplot(df1, aes(x = Sterilized, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+- `Health`(1 = Healthy, 2 = Minor Injury, 3 = Serious Injury, 0 = Not Specified) vs. `AdoptionSpeed`: It's obvious to see that seriously injured animals usually have to wait more than at least 1 month for being adopted.
+```{r}
+p <- ggplot(df1, aes(x = Health, y = AdoptionSpeed))
+
+p + geom_point(alpha = .15, col = "#6e0000")
+```
+
+
+#####categorical variables
+Since the target is also categorical, here is the data pattern of `AdoptionSpeed`:
+We can know that most adoptions happened after 1 month of the animals 'profiles created. And there still have lots of animals not adopted after even 100 days.
+- The values of `AdoptionSpeed`:
+0 - Pet was adopted on the same day as it was listed. 
+1 - Pet was adopted between 1 and 7 days (1st week) after being listed. 
+2 - Pet was adopted between 8 and 30 days (1st month) after being listed. 
+3 - Pet was adopted between 31 and 90 days (2nd & 3rd month) after being listed. 
+4 - No adoption after 100 days of being listed. (There are no pets in this dataset that waited between 90 and 100 days).
+```{r}
+p <- ggplot(df1, aes(x = AdoptionSpeed)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Type`(1 = Dog, 2 = Cat): There are more dogs than cats abandoned.
+```{r}
+p <- ggplot(df1, aes(x = Type)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Gender`(1 = Male, 2 = Female): There are more female animals than males.
+```{r}
+p <- ggplot(df1, aes(x = Gender)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `MaturitySize`(1 = Small, 2 = Medium, 3 = Large, 4 = Extra Large, 0 = Not Specified): Most animals have medium maturity size.
+```{r}
+p <- ggplot(df1, aes(x = MaturitySize)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `FurLength`(1 = Short, 2 = Medium, 3 = Long, 0 = Not Specified): Most animals are short fur.
+```{r}
+p <- ggplot(df1, aes(x = FurLength)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Vaccinated`(1 = Yes, 2 = No, 3 = Not Sure): Most animals' vaccinated conditions could be confirmed.
+```{r}
+p <- ggplot(df1, aes(x = Vaccinated)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Dewormed`(1 = Yes, 2 = No, 3 = Not Sure): Most animals have already been dewormed.
+```{r}
+p <- ggplot(df1, aes(x = Dewormed)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Sterilized`(1 = Yes, 2 = No, 3 = Not Sure): Most animals haven't been sterilized yet.
+```{r}
+p <- ggplot(df1, aes(x = Sterilized)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+- `Health`(1 = Healthy, 2 = Minor Injury, 3 = Serious Injury, 0 = Not Specified): Most animals are healthy.
+```{r}
+p <- ggplot(df1, aes(x = Health)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+Data patter:
+- More dogs than cats;
+- Much more baby animals;
+- more female animals;
+- many black and browm animals;
+- medium maturity is the most;
+- short fur length is the most;
+- most animals' vaccinated situation could be sured;
+- most animals have already been dewormed;
+- most animals haven't been sterilized;
+- most animals are healthy;
+- most animals' adoption fee is 0;
+- most animals' profiles don't have video;
+- most profiles include 1-5 photos;
+- a few animals were adopted immediatly on the same day of being listed.
+
+
+##Modeling: Supervised Analytics
+
+####Logistic Regression
+```{r}
+adop_multinom <- multinom(AdoptionSpeed ~ .,data = df1)
+
+tidy(adop_multinom)
+```
+
+Let's look at the predictive accuracy of this multinomial logistic regression for the testing dataset. 
+```{r}
+set.seed(2)
+inTraining <- createDataPartition(df1$AdoptionSpeed, p = .7, list = F)
+training <- df1[inTraining, ]
+testing  <- df1[-inTraining, ]
+
+train_per_multinom <- multinom(AdoptionSpeed ~ ., data = training)
+multinom_training <- training %>%
+  mutate(fits = predict(train_per_multinom)) %>%
+  mutate(multinom_accuracy = if_else(AdoptionSpeed == fits, 1, 0))
+multinom_accuracy <- sum(multinom_training$multinom_accuracy==1)/nrow(multinom_training)
+multinom_accuracy
+```
+Test Accuracy:
+```{r}
+multinom_test_pred <- predict(train_per_multinom, newdata = testing)
+multinom_testing <- testing %>%
+  mutate(AdoptionSpeed_pred = multinom_test_pred) %>%
+  mutate(multinom_pred_accuracy = if_else(AdoptionSpeed == AdoptionSpeed_pred, 1, 0))
+
+head(multinom_testing)
+```
+```{r}
+multinom_accuracy_test <- sum(multinom_testing$multinom_pred_accuracy==1)/nrow(multinom_testing)
+multinom_accuracy_test
+```
+The testing accuracy generated by applying this multinomial logistic regression is only `0.3587`, which tells the overfitting happened with this logistic regression model.
+
+####LDA
+```{r}
+set.seed(2)
+inTraining <- createDataPartition(df1$AdoptionSpeed, p = .7, list = F)
+training <- df1[inTraining, ]
+testing  <- df1[-inTraining, ]
+
+adop_lda <- lda(AdoptionSpeed ~ ., data = training)
+fits <- predict(adop_lda)
+confMat_lda <- table(fits$class, training$AdoptionSpeed)
+confMat_lda
+```
+Model Accuracy:
+```{r}
+accuracy_lda <- sum(418, 907, 316, 1166)/sum(confMat_lda)
+accuracy_lda
+```
+Test Accuracy:
+```{r}
+test_preds <- predict(adop_lda, newdata = testing)
+confMat_lda_test <- table(test_preds$class, testing$AdoptionSpeed)
+confMat_lda_test
+```
+```{r}
+accuracy_lda_test <- sum(178, 377, 158, 553)/sum(confMat_lda_test)
+accuracy_lda_test
+```
+Therefore, the test accuracy of this LDA model is `0.3651`, which is slightly overfitting.
+
+####QDA
+```{r}
+adop_qda <- qda(AdoptionSpeed ~ ., data = training)
+fits <- predict(adop_qda)
+confMat_qda <- table(fits$class, training$AdoptionSpeed)
+confMat_qda
+```
+Model Accuracy: this QDA model is better than LDA model.
+```{r}
+accuracy_qda <- sum(14, 831, 840, 326, 960)/sum(confMat_qda)
+accuracy_qda
+```
+Test Accuracy:
+```{r}
+test_preds <- predict(adop_qda, newdata = testing)
+confMat_qda_test <- table(test_preds$class, testing$AdoptionSpeed)
+confMat_qda_test
+```
+```{r}
+accuracy_qda_test <- sum(2, 342, 345, 136, 419)/sum(confMat_qda_test)
+accuracy_qda_test
+```
+So, the test accuracy of this QDA model is `0.3587`, which is lower than the test accuracy of the LDA model but not overfitting.
+
+####Classification Tree
+
+First, let run a basic decision tree
+```{r}
+df2 <- df1 %>%
+  mutate(AdoptionSpeed = as.factor(AdoptionSpeed))
+```
+```{r}
+adop_tree <- rpart(AdoptionSpeed ~ . , df2)
+prp(adop_tree)
+
+plot(as.party(adop_tree))
+
+adop_tree
+printcp(adop_tree)
+```
+```{r}
+set.seed(2)
+inTraining <- createDataPartition(df2$AdoptionSpeed, p = .7, list = F)
+training <- df2[inTraining, ]
+testing  <- df2[-inTraining, ]
+fit_control <- trainControl(method = "repeatedcv",
+                            number = 10, 
+                            repeats = 10)
+cv_adop_tree <- train(AdoptionSpeed ~ ., 
+                     data = training,
+                     method = "rpart", 
+                     trControl = fit_control)
+plot(cv_adop_tree)
+```
+```{r}
+cv_adop_tree #cp: method for choosing final nodes 
+```
+```{r}
+plot(as.party(cv_adop_tree$finalModel))
+```
+```{r}
+tree_test_pred <- predict(cv_adop_tree, newdata = testing)
+confMat_tree <- table(tree_test_pred, testing$AdoptionSpeed)
+confMat_tree
+```
+```{r}
+accuracy_tree_test <- sum(89, 544, 638)/sum(confMat_tree)
+accuracy_tree_test
+```
+The predictive accuracy on testing dataset of this decision tree is `0.3666`, which is higher than the logistic regression model but still too low.
+
+Now, let's try bagging and random forest for finding the best decision tree
+####Bagging
+```{r}
+set.seed(2)
+inTraining <- createDataPartition(df2$AdoptionSpeed, p = .7, list = F)
+training <- df2[inTraining, ]
+testing  <- df2[-inTraining, ]
+```
+
+```{r}
+set.seed(10982)
+adop_bag <- randomForest(AdoptionSpeed ~ ., data = training, mtry = 17) # mtry:  the number of predictors to try.
+adop_bag         # default setting of the number of tree is 500, which is pretty enough.
+```
+```{r}
+accuracy_bag <- 1 - .612
+accuracy_bag
+```
+Test Accuracy:
+```{r}
+test_preds <- predict(adop_bag, newdata = testing)
+test_df_bag <- testing %>%
+  mutate(y_hat_bag = test_preds,
+         accuracy = if_else(y_hat_bag==AdoptionSpeed,1,0))
+accuracy_bag_test <- sum(test_df_bag$accuracy==1)/nrow(test_df_bag)
+accuracy_bag_test
+```
+The test accuracy of this bagging model is `0.3828`.
+
+####Random Forest
+```{r}
+set.seed(1982)
+
+rf_adop_cv <- train(AdoptionSpeed ~ ., 
+                      data = training,
+                      method = "rf",
+                      ntree = 100,
+                      importance = T, # output the 'importance'
+                      tuneGrid = data.frame(mtry = 1:17)) # important piece for tree function training
+rf_adop_cv
+```
+```{r}
+plot(rf_adop_cv)
+```
+Therefore, for highest accuracy of prediction, the tree with `mtry = 2` is chosen as the best tree model.
+
+```{r}
+set.seed(1982)
+rf_adop_2 <- randomForest(AdoptionSpeed ~.,
+                          data = training,
+                          mtry = 2)
+rf_adop_2
+```
+```{r}
+accuracy_2 <- 1- .6056
+accuracy_2
+```
+Test Accuracy:
+```{r}
+test_preds <- predict(rf_adop_2, newdata = testing)
+test_df_rf <- testing %>%
+  mutate(y_hat_rf = test_preds,
+         accuracy = if_else(y_hat_rf==AdoptionSpeed,1,0))
+accuracy_rf_2 <- sum(test_df_rf$accuracy==1)/nrow(test_df_rf)
+accuracy_rf_2
+```
+After comparing the test accuracy of bagging and random forest with `mtry=2`, the random forest model get better test accuracy but is slightly overfitting which could be accepted.

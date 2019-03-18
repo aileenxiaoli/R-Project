@@ -1,0 +1,193 @@
+---
+title: "Animals Adoptability Analysis"
+author: "Xiao Li"
+output: 
+  flexdashboard::flex_dashboard:
+  vertical_layout: scroll
+source_code: embed
+---
+
+```{r , include=FALSE}
+library(readr)
+library(tidyverse)
+library(gapminder) 
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(glmnet)
+library(caret)
+library(ISLR)
+library(janitor)
+library(rpart)
+library(rpart.plot)
+library(partykit)
+library(nnet)
+library(MASS)
+library(wordcloud)
+library(RColorBrewer)
+library(randomForest)
+library(gbm)
+library(plotROC)
+library(kernlab)
+library(nnet)
+library(stringi)
+library(tm)
+library(gridExtra)
+theme_set(theme_bw())
+```  
+
+```{r setup, include=FALSE}
+# Data
+df <- read_csv("train.csv")
+
+df <- df %>%
+  filter(Quantity == "1")%>%
+  subset(select = -c(Name, PetID, Quantity, State, RescuerID))
+```
+
+```{r word cloud, include=FALSE}
+
+Description <- stringi::stri_trans_general(df$Description, "latin-ascii")
+
+description<-Corpus(VectorSource(Description))
+
+description <- tm_map(description,stripWhitespace)
+description <- tm_map(description,tolower)
+description <- tm_map(description,removeNumbers)
+description <- tm_map(description,removePunctuation)
+description <- tm_map(description,removeWords, stopwords("english"))
+description <- tm_map(description, removeWords, 
+  c("and","the","our","that","for","are","also","more","has","must","have","should","this","with","dog","cat","dogs","cats","home","adoption","can","give"))
+```
+
+```{r, include=FALSE}
+# Data without `Description`.
+df1 <- subset(df, select = -c(Description))
+
+# Data for tree
+df2 <- df1 %>%
+  mutate(AdoptionSpeed = as.factor(AdoptionSpeed))
+```
+Row {.tabset .tabset-fade}
+-------------------------------------
+
+### Word Cloud: Description of Animals' Profiles
+  
+```{r}
+wordcloud (description, scale=c(3.5,0.5), max.words=100, random.order=FALSE, rot.per=0.35, use.r.layout=FALSE, colors=brewer.pal(8, "Dark2"))
+```
+
+### Adoption Speed
+
+```{r}
+p <- ggplot(df1, aes(x = AdoptionSpeed)) + geom_bar(fill = "dodgerblue4")
+p
+```
+
+### Age Impact
+
+```{r}
+p1 <- ggplot(df1, aes(x = Age, y = AdoptionSpeed)) + geom_point(alpha = .15, col = "#6e0000") + 
+  ggtitle("Age vs. Adoption Speed")
+p2 <- ggplot(df1, aes(x = Age)) + geom_histogram(fill = "dodgerblue4") + ggtitle("Age Distribution")
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+### Video Amt / Photo Amt Impact
+  
+```{r}
+p1 <- ggplot(df1, aes(x = VideoAmt, y = AdoptionSpeed)) + 
+  geom_point(alpha = .15, col = "#6e0000") + ggtitle("Video Amt vs. Adoption Speed") 
+
+p2 <- ggplot(df1, aes(x = PhotoAmt, y = AdoptionSpeed)) + 
+  geom_point(alpha = .15, col = "#6e0000") + ggtitle("Photo Amt vs. Adoption Speed")
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+
+### Breed Impact
+
+```{r}
+ggplot(df1, aes(x = Breed1, y = AdoptionSpeed)) + geom_point(alpha = .15, col = "#6e0000") +
+  labs(title="Breed vs. Adoption Speed")
+```
+
+### Maturity Size Impact
+
+```{r}
+p1 <- ggplot(df1, aes(x = MaturitySize, y = AdoptionSpeed)) + geom_point(alpha = .15, col = "#6e0000")+
+  ggtitle("Maturity Size vs. Adoption Speed")
+p2 <- ggplot(df1, aes(x = MaturitySize)) + geom_bar(fill = "dodgerblue4") + labs(title="Maturity Size")
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+### Healthy Condition Impact  
+
+```{r}
+p1 <- ggplot(df1, aes(x = Health, y = AdoptionSpeed)) + geom_point(alpha = .15, col = "#6e0000") +
+  ggtitle("Health vs. Adoption Speed")
+p2 <- ggplot(df1, aes(x = Health)) + geom_bar(fill = "dodgerblue4") + labs(title = "Healthy Condition")
+
+grid.arrange(p1, p2, nrow = 1)
+```
+
+### Other Characteristics: Animal Characteristics
+
+```{r}
+Type <- ggplot(df1, aes(x = Type)) + geom_bar(fill = "dodgerblue4") + ggtitle("Type")
+Gender <- ggplot(df1, aes(x = Gender)) + geom_bar(fill = "dodgerblue4") + labs(title = "Gender")
+FurLength <- ggplot(df1, aes(x = FurLength)) + geom_bar(fill = "dodgerblue4") + ggtitle("Fur Length")
+
+grid.arrange(grobs=list(Type, Gender, FurLength), nrow(1))
+```
+
+### Other Characteristics: Health Conditions
+```{r}
+Vaccinated <- ggplot(df1, aes(x = Vaccinated)) + geom_bar(fill = "dodgerblue4") + ggtitle("Vaccinated")
+Dewormed <- ggplot(df1, aes(x = Dewormed)) + geom_bar(fill = "dodgerblue4") + ggtitle("Dewormed")
+Sterilized <- ggplot(df1, aes(x = Sterilized)) + geom_bar(fill = "dodgerblue4") + ggtitle("Sterilized")
+
+grid.arrange(grobs = list(Vaccinated, Dewormed, Sterilized), nrow(1))
+```
+
+
+### Classification Tree: Best Tree  
+```{r}
+set.seed(2)
+inTraining <- createDataPartition(df2$AdoptionSpeed, p = .7, list = F)
+training <- df2[inTraining, ]
+testing  <- df2[-inTraining, ]
+fit_control <- trainControl(method = "repeatedcv",
+                            number = 10, 
+                            repeats = 10)
+cv_adop_tree <- train(AdoptionSpeed ~ ., 
+                     data = training,
+                     method = "rpart", 
+                     trControl = fit_control)
+cv_adop_tree
+```
+
+### Classification Tree: Tree Plot
+```{r}
+plot(as.party(cv_adop_tree$finalModel))
+```
+
+### Bagging
+```{r}
+set.seed(10982)
+adop_bag <- randomForest(AdoptionSpeed ~ ., data = training, mtry = 17) 
+adop_bag         
+```
+
+
+### Best Method: Random Forest w/ mtry = 2
+```{r}
+rf_adop_2 <- randomForest(AdoptionSpeed ~.,
+                          data = training,
+                          mtry = 2)
+rf_adop_2
+```
+
